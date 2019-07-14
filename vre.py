@@ -6,7 +6,7 @@ class DecodeError(Exception):
     pass
 
 
-class Decoder:
+class Context:
     def __init__(self, byteorder, size_of_int, size_of_real):
         self.bo = byteorder
         self.size_of_int = size_of_int
@@ -24,16 +24,25 @@ class Decoder:
         else:
             raise DecodeError("size_of_real must be 4 or 8", size_of_real)
 
-    def next_block(self, f):
-        buf = f.read(self.size_of_int)
-        if len(buf) == 0:
+    def next_record(self, f):
+        size_decoder = self.create("i")
+        buflen = f.read(self.size_of_int)
+        if len(buflen) == 0:
             return None
-        l, = struct.unpack(self.bo + self.i, buf)
+        l, = size_decoder.unpack(buflen)
         buf = f.read(l)
-        ll, = struct.unpack(self.bo + self.i, f.read(self.size_of_int))
+        ll, = size_decoder.unpack(f.read(self.size_of_int))
         if l != ll:
             raise DecodeError("record length not match", l, ll)
-        return buf
+        return buflen + buf + buflen
+
+    def unwrap_record(self, buf):
+        return buf[self.size_of_int:-self.size_of_int]
+
+    def wrap_record(self, buf):
+        size_encoder = self.create("i")
+        buflen = size_encoder.pack(len(buf))
+        return buflen + buf + buflen
 
     def create(self, fmt):
         fmt = fmt.replace("i", self.i)
@@ -41,28 +50,45 @@ class Decoder:
         return struct.Struct(self.bo + fmt)
 
 
-def decode_list(decoder, buf, formats):
-    size_decoder = decoder.create("i")
+def decode_list(ctx, buf, formats):
+    size_decoder = ctx.create("i")
     n, = size_decoder.unpack_from(buf, 0)
     fmt, model = formats[0]
 
     i = size_decoder.size
-    dec = decoder.create(fmt)
+    dec = ctx.create(fmt)
     formats = formats[1:]
     models = []
     for _ in range(n):
         m = model._make(dec.unpack_from(buf, i))
         i += dec.size
         if len(formats) > 0:
-            ii, ms2 = decode_list(decoder, buf[i:], formats)
+            ii, ms2 = decode_list(ctx, buf[i:], formats)
             i += ii
             m = (m, ms2)
         models.append(m)
     return (i, models)
 
 
-def decode_recid(decoder, buf):
-    recid_decoder = decoder.create("i")
+def encode_list(ctx, formats, values):
+    size_encoder = ctx.create("i")
+    fmt = formats[0]
+    formats = formats[1:]
+    encoder = ctx.create(fmt)
+
+    buf = size_encoder.pack(len(values))
+    for v in values:
+        if len(formats) == 0:
+            buf += encoder.pack(*v)
+        else:
+            v2, vals2 = v
+            buf += encoder.pack(*v2)
+            buf += encode_list(ctx, formats, vals2)
+    return buf
+
+
+def decode_recid(ctx, buf):
+    recid_decoder = ctx.create("i")
     recid, = recid_decoder.unpack_from(buf, 0)
     return recid
 
@@ -74,6 +100,7 @@ def decode_recid(decoder, buf):
 #
 # フォーマット
 #
+HeaderFormat = 'BB?2xB9xii8x'
 Header = namedtuple('Header', [
     # 整数データ長
     'size_of_int',
@@ -97,6 +124,7 @@ Header = namedtuple('Header', [
 #
 # バージョン
 #
+VersionFormat = 'ii'
 Version = namedtuple('Version', [
     # バージョン番号
     'version',
@@ -120,7 +148,7 @@ def decode_header(f):
     if l != ll:
         raise DecodeError("record length not match", l, ll)
     # parse header
-    header = Header._make(struct.unpack(byteorder + "BB?2xB9xii8x", buf))
+    header = Header._make(struct.unpack(byteorder + HeaderFormat, buf))
 
     # parse version
     l, = struct.unpack(byteorder + "i", f.read(4))
@@ -128,8 +156,21 @@ def decode_header(f):
     ll, = struct.unpack(byteorder + "i", f.read(4))
     if l != ll:
         raise DecodeError("record length not match", l, ll)
-    version = Version._make(struct.unpack(byteorder + "ii", buf))
+    version = Version._make(struct.unpack(byteorder + VersionFormat, buf))
     return (byteorder, header, version)
+
+
+def encode_header(ctx, header, version):
+    if ctx.bo == '>':
+        byteorder = 0
+    else:
+        byteorder = 1
+    bufheader = struct.pack(ctx.bo + 'b' + HeaderFormat, byteorder, ctx.size_of_int, ctx.size_of_real, header.is_p,
+                            header.prog, header.version, header.revision)
+    bufreclen = struct.pack(ctx.bo + 'i', len(bufheader))
+    bufversion = struct.pack(ctx.bo + VersionFormat, *version)
+    bufverlen = struct.pack(ctx.bo + 'i', len(bufversion))
+    return bufreclen + bufheader + bufreclen + bufverlen + bufversion + bufverlen
 
 
 # ================================
@@ -162,9 +203,13 @@ Title = namedtuple('Title', [
 ])
 
 
-def decode_title(decoder, buf):
-    title_decoder = decoder.create(TitleFormat)
+def decode_title(ctx, buf):
+    title_decoder = ctx.create(TitleFormat)
     return Title._make(title_decoder.unpack(buf))
+
+
+def encode_title(ctx, title):
+    return ctx.create(TitleFormat).pack(*title)
 
 
 #
@@ -247,9 +292,13 @@ Param = namedtuple('Param', [
 ])
 
 
-def decode_param(decoder, buf):
-    param_decoder = decoder.create(ParamFormat)
+def decode_param(ctx, buf):
+    param_decoder = ctx.create(ParamFormat)
     return Param._make(param_decoder.unpack(buf))
+
+
+def encode_param(ctx, param):
+    return ctx.create(ParamFormat).pack(*param)
 
 
 #
@@ -272,9 +321,13 @@ Baseinfo = namedtuple('Baseinfo', [
 ])
 
 
-def decode_baseinfo(decoder, buf):
-    baseinfo_decoder = decoder.create(BaseinfoFormat)
+def decode_baseinfo(ctx, buf):
+    baseinfo_decoder = ctx.create(BaseinfoFormat)
     return Baseinfo._make(baseinfo_decoder.unpack(buf))
+
+
+def encode_baseinfo(ctx, baseinfo):
+    return ctx.create(BaseinfoFormat).pack(*baseinfo)
 
 
 #
@@ -319,16 +372,21 @@ RSMode = namedtuple('RSMode', [
 ])
 
 
-def decode_rscase(decoder, buf):
-    rscase_decoder = decoder.create(RSCaseFormat)
+def decode_rscase(ctx, buf):
+    rscase_decoder = ctx.create(RSCaseFormat)
     rscase = RSCase._make(rscase_decoder.unpack_from(buf, 0))
-    n, rssubcases = decode_list(decoder, buf[rscase_decoder.size:], [
+    n, rssubcases = decode_list(ctx, buf[rscase_decoder.size:], [
         (RSSubCaseFormat, RSSubCase),
         (RSModeFormat, RSMode),
     ])
     if len(buf) - rscase_decoder.size - n > 0:
         raise DecodeError("rscase is too long")
     return (rscase, rssubcases)
+
+
+def encode_rscase(ctx, rscase):
+    return ctx.create(RSCaseFormat).pack(*rscase[0]) \
+           + encode_list(ctx, [RSSubCaseFormat, RSModeFormat], rscase[1])
 
 
 #
@@ -378,19 +436,27 @@ STLModel = namedtuple('STLModel', [
 ])
 
 
-def decode_modelinf(decoder, buf):
-    modelinf_decoder = decoder.create(ModelinfFormat)
+def decode_modelinf(ctx, buf):
+    modelinf_decoder = ctx.create(ModelinfFormat)
     modelinf = Modelinf._make(modelinf_decoder.unpack_from(buf, 0))
     i = modelinf_decoder.size
-    j, voxcel_models = decode_list(decoder, buf[i:], [
+    j, voxcel_models = decode_list(ctx, buf[i:], [
         (VoxcelModelFormat, VoxcelModel),
     ])
     i += j
-    j, stl_models = decode_list(decoder, buf[i:], [(STLModelFormat, STLModel)])
+    j, stl_models = decode_list(ctx, buf[i:], [
+        (STLModelFormat, STLModel),
+    ])
     i += j
     if len(buf) - i > 0:
         raise DecodeError("modelinf is too long")
     return (modelinf, voxcel_models, stl_models)
+
+
+def encode_modelinf(ctx, modelinf):
+    return ctx.create(ModelinfFormat).pack(*modelinf[0]) \
+           + encode_list(ctx, [VoxcelModelFormat], modelinf[1]) \
+           + encode_list(ctx, [STLModelFormat], modelinf[2])
 
 
 #
@@ -464,11 +530,11 @@ DetailArea = namedtuple('DetailArea', [
 ])
 
 
-def decode_simple_result(decoder, buf):
-    simple_result_decoder = decoder.create(SimpleResultFormat)
+def decode_simple_result(ctx, buf):
+    simple_result_decoder = ctx.create(SimpleResultFormat)
     simple_result = SimpleResult._make(simple_result_decoder.unpack_from(buf, 0))
     i = simple_result_decoder.size
-    j, voxcel_models = decode_list(decoder, buf[i:], [
+    j, voxcel_models = decode_list(ctx, buf[i:], [
         (SimpleVoxcelModelFormat, SimpleVoxcelModel),
         (DetailAreaFormat, DetailArea),
     ])
@@ -476,6 +542,11 @@ def decode_simple_result(decoder, buf):
     if len(buf) - i > 0:
         raise DecodeError("simple_result is too long")
     return (simple_result, voxcel_models)
+
+
+def encode_simple_result(ctx, simple_result):
+    return ctx.create(SimpleResultFormat).pack(*simple_result[0]) \
+           + encode_list(ctx, [SimpleVoxcelModelFormat, DetailAreaFormat], simple_result[1])
 
 
 # ================================
@@ -514,9 +585,13 @@ DataProp = namedtuple('DataProp', [
 ])
 
 
-def decode_dataprop(decoder, buf):
-    dataprop_decoder = decoder.create(DataPropFormat)
+def decode_dataprop(ctx, buf):
+    dataprop_decoder = ctx.create(DataPropFormat)
     return DataProp._make(dataprop_decoder.unpack(buf))
+
+
+def encode_dataprop(ctx, dataprop):
+    return ctx.create(DataPropFormat).pack(*dataprop)
 
 
 #
@@ -543,9 +618,9 @@ OutputValue = namedtuple('OutputValue', [
 ])
 
 
-def decode_outputs(decoder, buf):
-    size_decoder = decoder.create("i")
-    output_decoder = decoder.create(OutputFormat)
+def decode_outputs(ctx, buf):
+    size_decoder = ctx.create("i")
+    output_decoder = ctx.create(OutputFormat)
 
     n, = size_decoder.unpack_from(buf, 0)
     i = size_decoder.size
@@ -555,18 +630,24 @@ def decode_outputs(decoder, buf):
         output = Output._make(output_decoder.unpack_from(buf, i))
         i += output_decoder.size
 
-        value_decoder = Decoder(decoder.bo, decoder.size_of_int, output.size_of_real).create(OutputValueFormat)
-        n2, = size_decoder.unpack_from(buf, i)
-        i += size_decoder.size
-
-        values = []
-        for _ in range(n2):
-            value = OutputValue._make(value_decoder.unpack_from(buf, i))
-            i += value_decoder.size
-            values.append(value)
-
+        # create new context for size_of_read
+        j, values = decode_list(Context(ctx.bo, ctx.size_of_int, output.size_of_real), buf[i:], [
+            (OutputValueFormat, OutputValue),
+        ])
+        i += j
         outputs.append((output, values))
     return (i, outputs)
+
+
+def encode_outputs(ctx, outputs):
+    size_encoder = ctx.create("i")
+    output_encoder = ctx.create(OutputFormat)
+    buf = size_encoder.pack(len(outputs))
+    for o in outputs:
+        output, values = o
+        buf += output_encoder.pack(*output)
+        buf += encode_list(Context(ctx.bo, ctx.size_of_int, output.size_of_real), [OutputValueFormat], values)
+    return buf
 
 
 #
@@ -585,15 +666,20 @@ NodeVal = namedtuple('NodeVal', [
 ])
 
 
-def decode_nodalval(decoder, buf):
-    nodalval_decoder = decoder.create(NodeValFormat)
-    nodalval = NodeVal._make(nodalval_decoder.unpack_from(buf, 0))
-    i = nodalval_decoder.size
-    j, outputs = decode_outputs(decoder, buf[i:])
+def decode_nodeval(ctx, buf):
+    nodeval_decoder = ctx.create(NodeValFormat)
+    nodeval = NodeVal._make(nodeval_decoder.unpack_from(buf, 0))
+    i = nodeval_decoder.size
+    j, outputs = decode_outputs(ctx, buf[i:])
     i += j
     if len(buf) - i > 0:
-        raise DecodeError("nodalval is too long")
-    return (nodalval, outputs)
+        raise DecodeError("nodeval is too long")
+    return (nodeval, outputs)
+
+
+def encode_nodeval(ctx, nodeval):
+    return ctx.create(NodeValFormat).pack(*nodeval[0]) \
+           + encode_outputs(ctx, nodeval[1])
 
 
 #
@@ -612,15 +698,20 @@ ElemVal = namedtuple('ElemVal', [
 ])
 
 
-def decode_elemval(decoder, buf):
-    elemval_decoder = decoder.create(ElemValFormat)
+def decode_elemval(ctx, buf):
+    elemval_decoder = ctx.create(ElemValFormat)
     elemval = ElemVal._make(elemval_decoder.unpack_from(buf, 0))
     i = elemval_decoder.size
-    j, outputs = decode_outputs(decoder, buf[i:])
+    j, outputs = decode_outputs(ctx, buf[i:])
     i += j
     if len(buf) - i > 0:
         raise DecodeError("elemval is too long")
     return (elemval, outputs)
+
+
+def encode_elemval(ctx, elemval):
+    return ctx.create(ElemValFormat).pack(*elemval[0]) \
+           + encode_outputs(ctx, elemval[1])
 
 
 #
@@ -645,17 +736,22 @@ OptHistValue = namedtuple('OptHistValue', [
 ])
 
 
-def decode_opthist(decoder, buf):
-    opthist_decoder = decoder.create(OptHistFormat)
+def decode_opthist(ctx, buf):
+    opthist_decoder = ctx.create(OptHistFormat)
     opthist = OptHist._make(opthist_decoder.unpack_from(buf, 0))
     i = opthist_decoder.size
-    j, steps = decode_list(decoder, buf[i:], [
+    j, steps = decode_list(ctx, buf[i:], [
         (OptHistValueFormat, OptHistValue),
     ])
     i += j
     if len(buf) - i > 0:
         raise DecodeError("opthist is too long")
     return (opthist, steps)
+
+
+def encode_opthist(ctx, opthist):
+    return ctx.create(OptHistFormat).pack(*opthist[0]) \
+           + encode_list(ctx, [OptHistValueFormat], opthist[1])
 
 
 #
@@ -679,15 +775,20 @@ SimpleEVal = namedtuple('SimpleEVal', [
 ])
 
 
-def decode_simpleeval(decoder, buf):
-    simpleeval_decoder = decoder.create(SimpleEValFormat)
+def decode_simpleeval(ctx, buf):
+    simpleeval_decoder = ctx.create(SimpleEValFormat)
     eval = SimpleEVal._make(simpleeval_decoder.unpack_from(buf, 0))
     i = simpleeval_decoder.size
-    j, outputs = decode_outputs(decoder, buf[i:])
+    j, outputs = decode_outputs(ctx, buf[i:])
     i += j
     if len(buf) - i > 0:
         raise DecodeError("simpleeval is too long")
     return (eval, outputs)
+
+
+def encode_simpleeval(ctx, simpleeval):
+    return ctx.create(SimpleEValFormat).pack(*simpleeval[0]) \
+           + encode_outputs(ctx, simpleeval[1])
 
 
 #
@@ -712,32 +813,46 @@ AreaId = namedtuple('AreaId', [
 ])
 
 
-def decode_nodeval_heat(decoder, buf):
-    nodeval_heat_decoder = decoder.create(NodeValHeatFormat)
+def decode_nodeval_heat(ctx, buf):
+    nodeval_heat_decoder = ctx.create(NodeValHeatFormat)
     nodeval_heat = NodeValHeat._make(nodeval_heat_decoder.unpack_from(buf, 0))
     i = nodeval_heat_decoder.size
 
     values = []
     if nodeval_heat.id == NodeValHeatId:
-        size_decoder = decoder.create("i")
-        area_id_decoder = decoder.create(AreaIdFormat)
+        size_decoder = ctx.create("i")
+        area_id_decoder = ctx.create(AreaIdFormat)
         n, = size_decoder.unpack_from(buf, i)
         i += size_decoder.size
         for _ in range(n):
             area_id = AreaId._make(area_id_decoder.unpack_from(buf, i))
             i += area_id_decoder.size
 
-            j, outputs = decode_outputs(decoder, buf[i:])
+            j, outputs = decode_outputs(ctx, buf[i:])
             i += j
             values.append((area_id, outputs))
     else:
-        j, outputs = decode_outputs(decoder, buf[i:])
+        j, outputs = decode_outputs(ctx, buf[i:])
         i += j
         values = outputs
 
     if len(buf) - i > 0:
         raise DecodeError("nodeval_heat is too long")
     return (nodeval_heat, values)
+
+
+def encode_nodeval_heat(ctx, nodeval_heat):
+    buf = ctx.create(NodeValHeatFormat).pack(*nodeval_heat[0])
+    values = nodeval_heat[1]
+    if nodeval_heat[0].id == NodeValHeatId:
+        buf += ctx.create("i").pack(len(values))
+        aread_id_encoder = ctx.create(AreaIdFormat)
+        for v in values:
+            buf += aread_id_encoder.pack(*v[0]) \
+                   + encode_outputs(ctx, v[1])
+    else:
+        buf += encode_outputs(ctx, values)
+    return buf
 
 
 #
@@ -756,26 +871,26 @@ ElemValHeat = namedtuple('ElemValHeat', [
 ])
 
 
-def decode_elemval_heat(decoder, buf):
-    elemval_heat_decoder = decoder.create(ElemValHeatFormat)
+def decode_elemval_heat(ctx, buf):
+    elemval_heat_decoder = ctx.create(ElemValHeatFormat)
     elemval_heat = ElemValHeat._make(elemval_heat_decoder.unpack_from(buf, 0))
     i = elemval_heat_decoder.size
 
     values = []
     if elemval_heat.id == ElemValHeatId:
-        size_decoder = decoder.create("i")
-        area_id_decoder = decoder.create(AreaIdFormat)
+        size_decoder = ctx.create("i")
+        area_id_decoder = ctx.create(AreaIdFormat)
         n, = size_decoder.unpack_from(buf, i)
         i += size_decoder.size
         for _ in range(n):
             area_id = AreaId._make(area_id_decoder.unpack_from(buf, i))
             i += area_id_decoder.size
 
-            j, outputs = decode_outputs(decoder, buf[i:])
+            j, outputs = decode_outputs(ctx, buf[i:])
             i += j
             values.append((area_id, outputs))
     else:
-        j, outputs = decode_outputs(decoder, buf[i:])
+        j, outputs = decode_outputs(ctx, buf[i:])
         i += j
         values = outputs
 
@@ -784,52 +899,81 @@ def decode_elemval_heat(decoder, buf):
     return (elemval_heat, values)
 
 
+def encode_elemval_heat(ctx, elemval_heat):
+    buf = ctx.create(ElemValHeatFormat).pack(*elemval_heat[0])
+    values = elemval_heat[1]
+    if elemval_heat[0].id == ElemValHeatId:
+        buf += ctx.create("i").pack(len(values))
+        aread_id_encoder = ctx.create(AreaIdFormat)
+        for v in values:
+            buf += aread_id_encoder.pack(*v[0]) \
+                   + encode_outputs(ctx, v[1])
+    else:
+        buf += encode_outputs(ctx, values)
+    return buf
+
+
 if __name__ == '__main__':
     f = open("./tmp/test.vre", "rb")
+    f2 = open("./tmp/test2.vre", "wb")
     byteorder, header, version = decode_header(f)
-    decoder = Decoder(byteorder, header.size_of_int, header.size_of_real)
+    ctx = Context(byteorder, header.size_of_int, header.size_of_real)
+    f2.write(encode_header(ctx, header, version))
 
-    buf = decoder.next_block(f)
-    title = decode_title(decoder, buf)
+    buf = ctx.next_record(f)
+    title = decode_title(ctx, ctx.unwrap_record(buf))
+    f2.write(ctx.wrap_record(encode_title(ctx, title)))
 
-    buf = decoder.next_block(f)
-    param = decode_param(decoder, buf)
+    buf = ctx.next_record(f)
+    param = decode_param(ctx, ctx.unwrap_record(buf))
+    f2.write(ctx.wrap_record(encode_param(ctx, param)))
 
-    buf = decoder.next_block(f)
-    baseinfo = decode_baseinfo(decoder, buf)
+    buf = ctx.next_record(f)
+    baseinfo = decode_baseinfo(ctx, ctx.unwrap_record(buf))
+    f2.write(ctx.wrap_record(encode_baseinfo(ctx, baseinfo)))
 
-    buf = decoder.next_block(f)
-    rscase = decode_rscase(decoder, buf)
+    buf = ctx.next_record(f)
+    rscase = decode_rscase(ctx, ctx.unwrap_record(buf))
+    f2.write(ctx.wrap_record(encode_rscase(ctx, rscase)))
 
-    buf = decoder.next_block(f)
-    modelinf = decode_modelinf(decoder, buf)
+    buf = ctx.next_record(f)
+    modelinf = decode_modelinf(ctx, ctx.unwrap_record(buf))
+    f2.write(ctx.wrap_record(encode_modelinf(ctx, modelinf)))
 
-    buf = decoder.next_block(f)
-    if decode_recid(decoder, buf) == SimpleResultId:
-        simple_result = decode_simple_result(decoder, buf)
-        buf = decoder.next_block(f)
+    buf = ctx.next_record(f)
+    if decode_recid(ctx, ctx.unwrap_record(buf)) == SimpleResultId:
+        simple_result = decode_simple_result(ctx, ctx.unwrap_record(buf))
+        f2.write(ctx.wrap_record(encode_simple_result(ctx, simple_result)))
+        buf = ctx.next_record(f)
 
     while True:
         if buf is None:
             break
-        dataprop = decode_dataprop(decoder, buf)
+        dataprop = decode_dataprop(ctx, ctx.unwrap_record(buf))
+        f2.write(ctx.wrap_record(encode_dataprop(ctx, dataprop)))
 
-        buf = decoder.next_block(f)
-        if decode_recid(decoder, buf) == NodeValId:
-            nodalval = decode_nodalval(decoder, buf)
+        buf = ctx.next_record(f)
+        if decode_recid(ctx, ctx.unwrap_record(buf)) == NodeValId:
+            nodeval = decode_nodeval(ctx, ctx.unwrap_record(buf))
+            f2.write(ctx.wrap_record(encode_nodeval(ctx, nodeval)))
 
-            buf = decoder.next_block(f)
-            elemval = decode_elemval(decoder, buf)
-            buf = decoder.next_block(f)
-        elif decode_recid(decoder, buf) == SimpleEValId:
-            simple_eval = decode_simpleeval(decoder, buf)
+            buf = ctx.next_record(f)
+            elemval = decode_elemval(ctx, ctx.unwrap_record(buf))
+            f2.write(ctx.wrap_record(encode_elemval(ctx, elemval)))
+            buf = ctx.next_record(f)
+        elif decode_recid(ctx, ctx.unwrap_record(buf)) == SimpleEValId:
+            simple_eval = decode_simpleeval(ctx, ctx.unwrap_record(buf))
+            f2.write(ctx.wrap_record(encode_simpleeval(ctx, simple_eval)))
 
-            buf = decoder.next_block(f)
-            if decode_recid(decoder, buf) == SimpleEValId:
-                nodeval_heat = decode_nodeval_heat(decoder, buf)
+            buf = ctx.next_record(f)
+            if decode_recid(ctx, ctx.unwrap_record(buf)) == SimpleEValId:
+                nodeval_heat = decode_nodeval_heat(ctx, ctx.unwrap_record(buf))
+                f2.write(ctx.wrap_record(encode_nodeval_heat(ctx, nodeval_heat)))
 
-                buf = decoder.next_block(f)
-                elemval_heat = decode_elemval_heat(decoder, buf)
-                buf = decoder.next_block(f)
+                buf = ctx.next_record(f)
+                elemval_heat = decode_elemval_heat(ctx, ctx.unwrap_record(buf))
+                f2.write(ctx.wrap_record(encode_elemval_heat(ctx, elemval_heat)))
+                buf = ctx.next_record(f)
 
     f.close()
+    f2.close()

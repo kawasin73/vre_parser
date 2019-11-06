@@ -646,7 +646,13 @@ def encode_outputs(ctx, outputs):
     for o in outputs:
         output, values = o
         buf += output_encoder.pack(*output)
-        buf += encode_list(Context(ctx.bo, ctx.size_of_int, output.size_of_real), [OutputValueFormat], values)
+        # optimize encode output values because it have too many values
+        # buf += encode_list(Context(ctx.bo, ctx.size_of_int, output.size_of_real), [OutputValueFormat], values)
+        ctx_v = Context(ctx.bo, ctx.size_of_int, output.size_of_real)
+        size_v_encoder = ctx_v.create("i")
+        values_encoder = ctx_v.create(OutputValueFormat * len(values))
+        buf += size_v_encoder.pack(len(values))
+        buf += values_encoder.pack(*[v.value for v in values])
     return buf
 
 
@@ -921,59 +927,65 @@ if __name__ == '__main__':
     f2.write(encode_header(ctx, header, version))
 
     buf = ctx.next_record(f)
-    title = decode_title(ctx, ctx.unwrap_record(buf))
-    f2.write(ctx.wrap_record(encode_title(ctx, title)))
-
-    buf = ctx.next_record(f)
-    param = decode_param(ctx, ctx.unwrap_record(buf))
-    f2.write(ctx.wrap_record(encode_param(ctx, param)))
-
-    buf = ctx.next_record(f)
-    baseinfo = decode_baseinfo(ctx, ctx.unwrap_record(buf))
-    f2.write(ctx.wrap_record(encode_baseinfo(ctx, baseinfo)))
-
-    buf = ctx.next_record(f)
-    rscase = decode_rscase(ctx, ctx.unwrap_record(buf))
-    f2.write(ctx.wrap_record(encode_rscase(ctx, rscase)))
-
-    buf = ctx.next_record(f)
-    modelinf = decode_modelinf(ctx, ctx.unwrap_record(buf))
-    f2.write(ctx.wrap_record(encode_modelinf(ctx, modelinf)))
-
-    buf = ctx.next_record(f)
-    if decode_recid(ctx, ctx.unwrap_record(buf)) == SimpleResultId:
-        simple_result = decode_simple_result(ctx, ctx.unwrap_record(buf))
-        f2.write(ctx.wrap_record(encode_simple_result(ctx, simple_result)))
+    while buf is not None:
+        recid = decode_recid(ctx, ctx.unwrap_record(buf))
+        if recid == TitleId:
+            # title = decode_title(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_title(ctx, title))
+            print("skip Title")
+        elif recid == ParamId:
+            # param = decode_param(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_param(ctx, param))
+            print("skip Param")
+        elif recid == BaseinfoId:
+            # baseinfo = decode_baseinfo(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_baseinfo(ctx, baseinfo))
+            print("skip Baseinfo")
+        elif recid == RSCaseId:
+            # rscase = decode_rscase(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_rscase(ctx, rscase))
+            print("skip RSCase")
+        elif recid == ModelinfId:
+            # modelinf = decode_modelinf(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_modelinf(ctx, modelinf))
+            print("skip Modelinf")
+        elif recid == SimpleResultId:
+            # simple_result = decode_simple_result(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_simple_result(ctx, simple_result))
+            print("skip SimpleResult")
+        elif recid == DataPropId:
+            # dataprop = decode_dataprop(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_dataprop(ctx, dataprop))
+            print("skip DataProp")
+        elif recid == NodeValId:
+            # nodeval = decode_nodeval(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_nodeval(ctx, nodeval))
+            print("skip NodeVal")
+        elif recid == ElemValId:
+            # elemval = decode_elemval(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_elemval(ctx, elemval))
+            print("skip ElemVal")
+        elif recid == OptHistId:
+            # opthist = decode_opthist(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_opthist(ctx, opthist))
+            print("skip OptHist")
+        elif recid == SimpleEValId:
+            # simple_eval = decode_simpleeval(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_simpleeval(ctx, simple_eval))
+            print("skip SimpleEVal")
+        elif recid == NodeValHeatId:
+            # nodeval_heat = decode_nodeval_heat(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_nodeval_heat(ctx, nodeval_heat))
+            print("skip NodeValHeat")
+        elif recid == ElemValHeatId:
+            # elemval_heat = decode_elemval_heat(ctx, ctx.unwrap_record(buf))
+            # buf = ctx.wrap_record(encode_elemval_heat(ctx, elemval_heat))
+            print("skip ElemValHeat")
+        else:
+            print("unknown recid :", recid)
+        # write back
+        f2.write(buf)
         buf = ctx.next_record(f)
-
-    while True:
-        if buf is None:
-            break
-        dataprop = decode_dataprop(ctx, ctx.unwrap_record(buf))
-        f2.write(ctx.wrap_record(encode_dataprop(ctx, dataprop)))
-
-        buf = ctx.next_record(f)
-        if decode_recid(ctx, ctx.unwrap_record(buf)) == NodeValId:
-            nodeval = decode_nodeval(ctx, ctx.unwrap_record(buf))
-            f2.write(ctx.wrap_record(encode_nodeval(ctx, nodeval)))
-
-            buf = ctx.next_record(f)
-            elemval = decode_elemval(ctx, ctx.unwrap_record(buf))
-            f2.write(ctx.wrap_record(encode_elemval(ctx, elemval)))
-            buf = ctx.next_record(f)
-        elif decode_recid(ctx, ctx.unwrap_record(buf)) == SimpleEValId:
-            simple_eval = decode_simpleeval(ctx, ctx.unwrap_record(buf))
-            f2.write(ctx.wrap_record(encode_simpleeval(ctx, simple_eval)))
-
-            buf = ctx.next_record(f)
-            if decode_recid(ctx, ctx.unwrap_record(buf)) == SimpleEValId:
-                nodeval_heat = decode_nodeval_heat(ctx, ctx.unwrap_record(buf))
-                f2.write(ctx.wrap_record(encode_nodeval_heat(ctx, nodeval_heat)))
-
-                buf = ctx.next_record(f)
-                elemval_heat = decode_elemval_heat(ctx, ctx.unwrap_record(buf))
-                f2.write(ctx.wrap_record(encode_elemval_heat(ctx, elemval_heat)))
-                buf = ctx.next_record(f)
 
     f.close()
     f2.close()

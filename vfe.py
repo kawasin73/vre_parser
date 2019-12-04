@@ -363,6 +363,7 @@ def encode_subcase(ctx, subcase):
     return ctx.create(SubcaseFormat).pack(*subcase[0]) \
            + encode_list(ctx, [SSubcaseFormat], subcase[1])
 
+
 #
 # ボクセル要素
 #
@@ -415,6 +416,7 @@ Voxcel = namedtuple('Voxcel', [
     'node_diff_4',
 ])
 
+
 def decode_element(ctx, buf):
     element_decoder = ctx.create(ElementFormat)
     element = Element._make(element_decoder.unpack_from(buf, 0))
@@ -427,8 +429,173 @@ def decode_element(ctx, buf):
 
 
 def encode_element(ctx, element):
-    return ctx.create(SubcaseFormat).pack(*element[0]) \
-           + encode_list(ctx, [SSubcaseFormat], element[1])
+    return ctx.create(ElementFormat).pack(*element[0]) \
+           + encode_list(ctx, [VoxcelFormat], element[1])
+
+
+#
+# 拘束セット
+#
+ConstSetId = 201
+ConstSetFormat = 'i16s'
+ConstSet = namedtuple('ConstSet', [
+    # レコードID
+    'id',
+
+    # 識別子
+    'idstr',
+
+    # 拘束セット数
+])
+# 拘束セット本体
+ConstFormat = 'i256s'
+Const = namedtuple('Const', [
+    # 拘束セットID
+    'id',
+
+    # 名称
+    'label',
+])
+# 含まれる節点拘束定義
+ConstSetNodeFormat = 'i'
+ConstSetNode = namedtuple('ConstSetNode', [
+    # 節点拘束ID
+    'id',
+])
+# 含まれる温度拘束定義
+ConstSetTempFormat = 'i'
+ConstSetTemp = namedtuple('ConstSetTemp', [
+    # 温度拘束ID
+    'id',
+])
+
+
+def decode_constset(ctx, buf):
+    constset_decoder = ctx.create(ConstSetFormat)
+    constset = ConstSet._make(constset_decoder.unpack_from(buf, 0))
+    size_decoder = ctx.create("i")
+    size, = size_decoder.unpack_from(buf[constset_decoder.size:], 0)
+    n = constset_decoder.size + size_decoder.size
+    consts = []
+    for i in range(size):
+        nn, const = decode_const(ctx, buf[n:])
+        n += nn
+        consts.append(const)
+    if len(buf) - constset_decoder.size - n > 0:
+        raise DecodeError("constset is too long")
+    return (constset, consts)
+
+
+def decode_const(ctx, buf):
+    const_decoder = ctx.create(ConstFormat)
+    const = Const._make(const_decoder.unpack_from(buf, 0))
+    n, node_consts = decode_list(ctx, buf[const_decoder.size:], [
+        (ConstSetNodeFormat, ConstSetNode),
+    ])
+    nn, temp_consts = decode_list(ctx, buf[const_decoder.size + n:], [
+        (ConstSetTempFormat, ConstSetTemp),
+    ])
+    return const_decoder.size + n + nn, (const, node_consts, temp_consts)
+
+
+def encode_const(ctx, const):
+    return ctx.create(ConstFormat).pack(*const[0]) \
+           + encode_list(ctx, [ConstSetNodeFormat], const[1]) \
+           + encode_list(ctx, [ConstSetTempFormat], const[2])
+
+
+def encode_constset(ctx, constset):
+    return ctx.create(ConstSetFormat).pack(*constset[0]) + b''.join([encode_const(ctx, c) for c in constset[1]])
+
+
+#
+# 節点拘束
+#
+ConstNodeId = 211
+ConstNodeFormat = 'i16s'
+ConstNode = namedtuple('ConstNode', [
+    # レコードID
+    'id',
+
+    # 識別子
+    'idstr',
+
+    # 節点拘束定義数
+])
+# 節点拘束定義本体
+ConstNodeDefFormat = 'i256siiiiiiiffffff'
+ConstNodeDef = namedtuple('ConstNodeDef', [
+    # 節点拘束ID
+    'id',
+
+    # 名称
+    'label',
+
+    # 局所座標系ID
+    'lcoord_id',
+
+    # 拘束X
+    'fixed_x',
+
+    # 拘束Y
+    'fixed_y',
+
+    # 拘束Z
+    'fixed_z',
+
+    # 拘束RX
+    'fixed_rx',
+
+    # 拘束RY
+    'fixed_ry',
+
+    # 拘束RZ
+    'fixed_rz',
+
+    # 強制変位量X
+    'constdisp_x',
+
+    # 強制変位量Y
+    'constdisp_y',
+
+    # 強制変位量Z
+    'constdisp_z',
+
+    # 強制変位量RX
+    'constdisp_rx',
+
+    # 強制変位量RY
+    'constdisp_ry',
+
+    # 強制変位量RZ
+    'constdisp_rz',
+
+    # 節点数
+])
+# 含まれる節点
+ConstNodeNodeFormat = 'i'
+ConstNodeNode = namedtuple('ConstNodeNode', [
+    # 節点ID
+    'id',
+])
+
+
+def decode_constnode(ctx, buf):
+    constnode_decoder = ctx.create(ConstNodeFormat)
+    constnode = ConstNode._make(constnode_decoder.unpack_from(buf, 0))
+    n, constnodedefs = decode_list(ctx, buf[constnode_decoder.size:], [
+        (ConstNodeDefFormat, ConstNodeDef),
+        (ConstNodeNodeFormat, ConstNodeNode),
+    ])
+    if len(buf) - constnode_decoder.size - n > 0:
+        raise DecodeError("constnode is too long")
+    return (constnode, constnodedefs)
+
+
+def encode_constnode(ctx, constnode):
+    return ctx.create(ConstNodeFormat).pack(*constnode[0]) \
+           + encode_list(ctx, [ConstNodeFormat, ConstNodeNodeFormat], constnode[1])
+
 
 if __name__ == '__main__':
     f = open("./tmp/test.vfe", "rb")
@@ -450,7 +617,7 @@ if __name__ == '__main__':
             print('param', param)
         elif recid == SubcaseId:
             subcase = decode_subcase(ctx, ctx.unwrap_record(buf))
-            print('subcase', subcase)
+            # print('subcase', subcase)
             print('succase count', len(subcase[1]))
         elif recid == 22:
             print("skip OUTPUT")
@@ -468,7 +635,7 @@ if __name__ == '__main__':
             print("skip PROP")
         elif recid == ElementId:
             element = decode_element(ctx, ctx.unwrap_record(buf))
-            print('element', element)
+            # print('element', element)
             print("element count", len(element[1]))
         elif recid == 121:
             print("skip MASS")
@@ -476,10 +643,18 @@ if __name__ == '__main__':
             print("skip RIGID")
         elif recid == 123:
             print("skip SPRING")
-        elif recid == 201:
-            print("skip CONSTSET")
-        elif recid == 211:
-            print("skip CONST")
+        elif recid == ConstSetId:
+            constset = decode_constset(ctx, ctx.unwrap_record(buf))
+            print('constset', constset)
+        elif recid == ConstNodeId:
+            constnode = decode_constnode(ctx, ctx.unwrap_record(buf))
+            (_constnode, constnodedefs) = constnode
+            print('constnode', _constnode)
+            print('len constnodedefs', len(constnodedefs))
+            for nodedef in constnodedefs:
+                _nodedef, nodes = nodedef
+                print('nodedef', _nodedef)
+                print('len nodes', len(nodes))
         elif recid == 221:
             print("skip TEMPC")
         elif recid == 231:

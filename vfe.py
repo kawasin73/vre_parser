@@ -365,6 +365,62 @@ def encode_subcase(ctx, subcase):
 
 
 #
+# モデル属性
+#
+ModelPrpId = 101
+ModelPrpFormat = 'i16si256siifffiii'
+ModelPrp = namedtuple('ModelPrp', [
+    # ID
+    'id',
+
+    # 名称
+    'idstr',
+
+    # ボクセルモデルID
+    'voxel_model_id',
+
+    # ボクセルモデル名
+    'voxel_model_name',
+
+    # 節点数
+    'num_node',
+
+    # 局所座標系ID
+    'coord_id',
+
+    # ボクセルサイズX
+    'size_x',
+
+    # ボクセルサイズY
+    'size_y',
+
+    # ボクセルサイズZ
+    'size_z',
+
+    # ボクセル数X
+    'num_x',
+
+    # ボクセル数Y
+    'num_y',
+
+    # ボクセル数Z
+    'num_z',
+])
+
+
+def decode_modelprp(ctx, buf):
+    modelprp_decoder = ctx.create(ModelPrpFormat)
+    if len(buf) > modelprp_decoder.size:
+        buf = buf[:modelprp_decoder.size]
+        print('modelprp buffer is longer than expected')
+    return ModelPrp._make(modelprp_decoder.unpack(buf))
+
+
+def encode_modelprp(ctx, modelprp):
+    return ctx.create(ModelPrpFormat).pack(*modelprp)
+
+
+#
 # ボクセル要素
 #
 ElementId = 111
@@ -629,8 +685,9 @@ if __name__ == '__main__':
             print("skip MODELNUM")
         elif recid == 26:
             print("skip FUNCTION")
-        elif recid == 101:
-            print("skip MODELPRP")
+        elif recid == ModelPrpId:
+            modelprp = decode_modelprp(ctx, ctx.unwrap_record(buf))
+            print('modelprp', modelprp)
         elif recid == 102:
             print("skip PROP")
         elif recid == ElementId:

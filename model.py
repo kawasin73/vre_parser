@@ -41,18 +41,17 @@ class VoxelElement:
                          elem.node_3 + elem.node_diff_3,
                          elem.node_4 + elem.node_diff_4]
 
-    def node_pos(self, size):
+    def node_pos(self):
         p = self.pos
-        x, y, z = size
         return [
             (p[0], p[1], p[2]),
-            (p[0] + x, p[1], p[2]),
-            (p[0] + x, p[1] + y, p[2]),
-            (p[0], p[1] + y, p[2]),
-            (p[0], p[1], p[2] + z),
-            (p[0] + x, p[1], p[2] + z),
-            (p[0] + x, p[1] + y, p[2] + z),
-            (p[0], p[1] + y, p[2] + z),
+            (p[0] + 1, p[1], p[2]),
+            (p[0] + 1, p[1] + 1, p[2]),
+            (p[0], p[1] + 1, p[2]),
+            (p[0], p[1], p[2] + 1),
+            (p[0] + 1, p[1], p[2] + 1),
+            (p[0] + 1, p[1] + 1, p[2] + 1),
+            (p[0], p[1] + 1, p[2] + 1),
         ]
 
     def __str__(self):
@@ -100,7 +99,7 @@ class NodeMap:
         self.num_node = voxelmap.num_node
         self.nodes = [Node(i) for i in range(self.num_node)]
         for elem in voxelmap.elems:
-            for id, pos in zip(elem.node_ids, elem.node_pos(voxelmap.size)):
+            for id, pos in zip(elem.node_ids, elem.node_pos()):
                 self.nodes[id - 1].save(pos)
         self.nodes_map = {node.pos: node for node in self.nodes}
 
@@ -136,7 +135,7 @@ class OutputValue:
         return self.__str__()
 
 
-def load_outputs(vre_filename, voxelmap, nodemap):
+def load_outputs(vre_filename, voxelmap, nodemap, types=None):
     node_outputs = {}
     voxel_outputs = {}
     with open(vre_filename, "rb") as f:
@@ -148,12 +147,14 @@ def load_outputs(vre_filename, voxelmap, nodemap):
             if recid == vre.NodeValId:
                 _, outputs = vre.decode_nodeval(ctx, ctx.unwrap_record(buf))
                 for output, values in outputs:
-                    node_outputs[output.type] = [OutputValue(output.type, value, node) for value, node in
-                                                 zip(values, nodemap.nodes)]
+                    if types is None or output.type in types:
+                        node_outputs[output.type] = [OutputValue(output.type, value, node) for value, node in
+                                                     zip(values, nodemap.nodes)]
             elif recid == vre.ElemValId:
                 _, outputs = vre.decode_elemval(ctx, ctx.unwrap_record(buf))
                 for output, values in outputs:
-                    voxel_outputs[output.type] = [OutputValue(output.type, value, elem) for value, elem in
-                                                  zip(values, voxelmap.elems)]
+                    if types is None or output.type in types:
+                        voxel_outputs[output.type] = [OutputValue(output.type, value, elem) for value, elem in
+                                                      zip(values, voxelmap.elems)]
             buf = ctx.next_record(f)
     return voxel_outputs, node_outputs
